@@ -1,4 +1,3 @@
-// ===== src/App.js =====
 import React, { useState, useRef, useEffect } from 'react';
 import { Upload, Download, Eye, EyeOff, RotateCcw, ZoomIn, ZoomOut, Square, Wand2, Save, AlertCircle, Check, X } from 'lucide-react';
 
