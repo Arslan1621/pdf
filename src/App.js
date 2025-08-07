@@ -136,13 +136,13 @@ const PDFRedactionTool = () => {
     }
   };
 
-  // Handle mouse events for manual redaction
+  // Handle mouse events for manual redaction with improved coordinate mapping
   const handleMouseDown = (e) => {
     if (!redactionMode || !overlayCanvasRef.current) return;
     
     const rect = overlayCanvasRef.current.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const x = (e.clientX - rect.left);
+    const y = (e.clientY - rect.top);
     
     startPoint.current = { x, y };
     setIsDrawing(true);
@@ -152,33 +152,38 @@ const PDFRedactionTool = () => {
     if (!isDrawing || !overlayCanvasRef.current) return;
     
     const rect = overlayCanvasRef.current.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const x = (e.clientX - rect.left);
+    const y = (e.clientY - rect.top);
     
     const ctx = overlayCanvasRef.current.getContext('2d');
     redrawRedactions();
     
-    // Draw current selection
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-    ctx.fillRect(
-      Math.min(startPoint.current.x, x),
-      Math.min(startPoint.current.y, y),
-      Math.abs(x - startPoint.current.x),
-      Math.abs(y - startPoint.current.y)
-    );
+    // Draw current selection with improved visibility
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+    ctx.strokeStyle = '#ff0000';
+    ctx.lineWidth = 2;
+    
+    const rectX = Math.min(startPoint.current.x, x);
+    const rectY = Math.min(startPoint.current.y, y);
+    const rectWidth = Math.abs(x - startPoint.current.x);
+    const rectHeight = Math.abs(y - startPoint.current.y);
+    
+    ctx.fillRect(rectX, rectY, rectWidth, rectHeight);
+    ctx.strokeRect(rectX, rectY, rectWidth, rectHeight);
   };
 
   const handleMouseUp = (e) => {
     if (!isDrawing) return;
     
     const rect = overlayCanvasRef.current.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const x = (e.clientX - rect.left);
+    const y = (e.clientY - rect.top);
     
     const width = Math.abs(x - startPoint.current.x);
     const height = Math.abs(y - startPoint.current.y);
     
-    if (width > 5 && height > 5) {
+    // Only create redaction if the area is large enough
+    if (width > 10 && height > 10) {
       const newRedaction = {
         id: Date.now(),
         page: currentPage,
@@ -227,26 +232,98 @@ const PDFRedactionTool = () => {
   const zoomIn = () => setScale(prev => Math.min(prev + 0.2, 3));
   const zoomOut = () => setScale(prev => Math.max(prev - 0.2, 0.5));
 
-  // Export redacted PDF (simulated)
+  // Undo last redaction
+  const undoLastRedaction = () => {
+    if (redactions.length > 0) {
+      setRedactions(prev => prev.slice(0, -1));
+    }
+  };
+
+  // Clear all redactions
+  const clearAllRedactions = () => {
+    if (window.confirm('Are you sure you want to clear all redactions?')) {
+      setRedactions([]);
+    }
+  };
+
+  // Export redacted PDF with actual redactions
   const exportRedactedPDF = async () => {
+    if (!pdfDoc || redactions.length === 0) {
+      alert('No redactions to apply!');
+      return;
+    }
+    
     setIsProcessing(true);
     
-    // Simulate PDF processing
-    await new Promise(resolve => setTimeout(resolve, 3000));
-    
-    // In a real implementation, this would:
-    // 1. Send redactions to backend
-    // 2. Backend processes PDF with PyMuPDF
-    // 3. Returns processed PDF blob
-    
-    // Mock download
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(pdfFile);
-    link.download = 'redacted_' + (pdfFile?.name || 'document.pdf');
-    link.click();
-    
-    setIsProcessing(false);
-    alert('Redacted PDF exported successfully!');
+    try {
+      // Load PDF-lib for PDF modification
+      const { PDFDocument, rgb } = await import('https://cdn.skypack.dev/pdf-lib@1.17.1');
+      
+      // Get the original PDF bytes
+      const pdfBytes = await pdfFile.arrayBuffer();
+      
+      // Load the PDF document
+      const pdfLibDoc = await PDFDocument.load(pdfBytes);
+      const pages = pdfLibDoc.getPages();
+      
+      // Group redactions by page
+      const redactionsByPage = {};
+      redactions.forEach(redaction => {
+        if (!redactionsByPage[redaction.page]) {
+          redactionsByPage[redaction.page] = [];
+        }
+        redactionsByPage[redaction.page].push(redaction);
+      });
+      
+      // Apply redactions to each page
+      for (const [pageNum, pageRedactions] of Object.entries(redactionsByPage)) {
+        const pageIndex = parseInt(pageNum) - 1;
+        const page = pages[pageIndex];
+        
+        if (page) {
+          const { width, height } = page.getSize();
+          
+          pageRedactions.forEach(redaction => {
+            // Convert canvas coordinates to PDF coordinates
+            // Canvas coordinates are from top-left, PDF coordinates are from bottom-left
+            const pdfX = (redaction.x / scale);
+            const pdfY = height - ((redaction.y + redaction.height) / scale);
+            const pdfWidth = redaction.width / scale;
+            const pdfHeight = redaction.height / scale;
+            
+            // Draw black rectangle over the area
+            page.drawRectangle({
+              x: pdfX,
+              y: pdfY,
+              width: pdfWidth,
+              height: pdfHeight,
+              color: rgb(0, 0, 0), // Black color
+            });
+          });
+        }
+      }
+      
+      // Generate the modified PDF
+      const modifiedPdfBytes = await pdfLibDoc.save();
+      
+      // Create download link
+      const blob = new Blob([modifiedPdfBytes], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'redacted_' + (pdfFile?.name || 'document.pdf');
+      link.click();
+      
+      // Cleanup
+      URL.revokeObjectURL(url);
+      
+      alert('Redacted PDF exported successfully!');
+    } catch (error) {
+      console.error('Error creating redacted PDF:', error);
+      alert('Error creating redacted PDF. Please try again.');
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   // Re-render page when scale or page changes
@@ -368,6 +445,26 @@ const PDFRedactionTool = () => {
                   {showSuggestions ? 'Hide AI Suggestions' : 'Show AI Suggestions'}
                 </button>
 
+                {/* Undo/Clear Controls */}
+                <div className="flex space-x-2">
+                  <button
+                    onClick={undoLastRedaction}
+                    disabled={redactions.length === 0}
+                    className="flex-1 flex items-center justify-center px-3 py-2 bg-orange-600 text-white rounded-md hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+                  >
+                    <RotateCcw className="h-4 w-4 mr-1" />
+                    Undo
+                  </button>
+                  <button
+                    onClick={clearAllRedactions}
+                    disabled={redactions.length === 0}
+                    className="flex-1 flex items-center justify-center px-3 py-2 bg-red-500 text-white rounded-md hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+                  >
+                    <X className="h-4 w-4 mr-1" />
+                    Clear
+                  </button>
+                </div>
+
                 {/* Export Button */}
                 <button
                   onClick={exportRedactedPDF}
@@ -435,11 +532,24 @@ const PDFRedactionTool = () => {
                 {redactions.length === 0 ? (
                   <p className="text-gray-500 text-sm">No redactions applied yet.</p>
                 ) : (
-                  redactions.map(redaction => (
-                    <div key={redaction.id} className="text-xs text-gray-600 mb-1 bg-gray-50 p-2 rounded">
-                      <span className="font-medium">Page {redaction.page}</span> - {redaction.type}
-                    </div>
-                  ))
+                  <div className="max-h-40 overflow-y-auto">
+                    {redactions.map((redaction, index) => (
+                      <div key={redaction.id} className="text-xs text-gray-600 mb-2 bg-gray-50 p-2 rounded flex justify-between items-center">
+                        <div>
+                          <span className="font-medium">#{index + 1}</span> - Page {redaction.page} ({redaction.type})
+                          <div className="text-gray-400">
+                            {Math.round(redaction.width)}×{Math.round(redaction.height)}px
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => setRedactions(prev => prev.filter(r => r.id !== redaction.id))}
+                          className="text-red-500 hover:text-red-700 p-1"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
                 )}
               </div>
             </div>
